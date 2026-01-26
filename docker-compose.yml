@@ -1,0 +1,173 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # STAGE 1: API INGESTION GATEWAY (Secure Entry Point)
+  # ============================================================================
+  backend:
+    build: ./backend
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:ppt@postgres_db:5432/essay_eval_db
+      - MONGO_URL=mongodb://mongo_db:27017
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OCR_TOPIC=ocr-jobs
+      - AI_TOPIC=ai-processing
+    depends_on:
+      - postgres_db
+      - mongo_db
+      - kafka
+    networks:
+      - essaynet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # STAGE 2: OCR WORKER (Document Processing)
+  # ============================================================================
+  ocr_worker:
+    build: ./backend
+    command: python -m app.workers.ocr_worker
+    environment:
+      - DATABASE_URL=postgresql://postgres:ppt@postgres_db:5432/essay_eval_db
+      - MONGO_URL=mongodb://mongo_db:27017
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - OCR_TOPIC=ocr-jobs
+      - AI_TOPIC=ai-processing
+    depends_on:
+      - postgres_db
+      - mongo_db
+      - kafka
+    networks:
+      - essaynet
+    restart: unless-stopped
+
+  # ============================================================================
+  # STAGE 3: AI ORCHESTRATOR WORKER (AI Analysis)
+  # ============================================================================
+  ai_worker:
+    build: ./backend
+    command: python -m app.workers.ai_worker
+    environment:
+      - DATABASE_URL=postgresql://postgres:ppt@postgres_db:5432/essay_eval_db
+      - MONGO_URL=mongodb://mongo_db:27017
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OCR_TOPIC=ocr-jobs
+      - AI_TOPIC=ai-processing
+    depends_on:
+      - postgres_db
+      - mongo_db
+      - kafka
+    networks:
+      - essaynet
+    restart: unless-stopped
+
+  # ============================================================================
+  # DATA LAYER: POSTGRES (Metadata Storage)
+  # ============================================================================
+  postgres_db:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ppt
+      POSTGRES_DB: essay_eval_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - essaynet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # DATA LAYER: MONGODB (Heavy Data Storage - Claim Check Pattern)
+  # ============================================================================
+  mongo_db:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - essaynet
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # MESSAGE BROKER: ZOOKEEPER (Kafka Coordination)
+  # ============================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - essaynet
+    healthcheck:
+      # Fix: Use CMD-SHELL to properly handle the pipe '|'
+      test: echo ruok | nc localhost 2181 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # MESSAGE BROKER: KAFKA (Event Queue)
+  # Topics: ocr-jobs, ai-processing
+  # ============================================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      
+      # --- NETWORK CONFIGURATION (Dual Listeners) ---
+      # INTERNAL: Used by backend/workers inside Docker (port 29092)
+      # EXTERNAL: Used by your Windows host (port 9092)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    networks:
+      - essaynet
+    healthcheck:
+      # Fix: Check against the INTERNAL listener port
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:29092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  essaynet:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  mongo_data:
+    driver: local
+
