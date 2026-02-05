@@ -8,6 +8,8 @@ python-dotenv
 python-multipart
 langchain-groq
 langchain
+langchain-community
+langchain-openai
 pydantic
 pytesseract
 pillow
@@ -16,3 +18,10 @@ aiohttp
 tenacity
 python-docx
 datetime
+pinecone-client
+openai
+tiktoken
+pymupdf
+numpy
+scikit-learn
+fastembed

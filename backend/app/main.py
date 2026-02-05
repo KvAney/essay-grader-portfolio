@@ -7,9 +7,16 @@ from app.db.models import Submission
 from app.core.config import settings
 from app.db.mongo import db as mongodb
 from app.utils.rate_limiter import TokenBucketRateLimiter
+from app.services.ingestion import NCERTIngestionPipeline
+from app.services.essay_evaluator import EssayEvaluationEngine
+from app.models.schemas import (
+    IngestionRequest, IngestionResponse,
+    GradeEssayRequest, GradeEssayResponse, ErrorResponse
+)
 from aiokafka import AIOKafkaProducer
 from datetime import datetime
 from bson import ObjectId
+from typing import List
 import json
 from sqlalchemy import text
 import asyncio
@@ -22,7 +29,11 @@ logger = logging.getLogger(__name__)
 # Create Tables
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Essay Grader API - Secure Ingestion Layer", version="2.0.0")
+app = FastAPI(
+    title="Essay Grader API - UPSC AI Assistant", 
+    version="3.0.0",
+    description="AI-powered essay grading with Ingestion Pipeline and Multi-Agent Evaluation Engine"
+)
 
 # Add CORS middleware
 app.add_middleware(
@@ -38,6 +49,12 @@ app.add_middleware(
 # ============================================================================
 # Limit user uploads to protect Kafka topic from being flooded
 ingestion_rate_limiter = TokenBucketRateLimiter(rate=50, per=60)  # 50 uploads/min max
+
+# ============================================================================
+# INITIALIZE CORE MODULES
+# ============================================================================
+ingestion_pipeline = NCERTIngestionPipeline(mongodb)
+evaluation_engine = EssayEvaluationEngine(mongodb)
 
 # ============================================================================
 # HELPER: ASYNC KAFKA PRODUCER
@@ -65,21 +82,162 @@ async def produce_to_kafka(topic: str, message: dict) -> bool:
     finally:
         await producer.stop()
 
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
-
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {
-        "message": "Essay Grader API - Secure Ingestion Layer",
-        "version": "2.0.0",
-        "architecture": "PostgreSQL + MongoDB + Kafka",
-        "docs": "/docs"
+        "message": "Essay Grader API - UPSC AI Assistant",
+        "version": "3.0.0",
+        "architecture": "FastAPI + PostgreSQL + MongoDB + Pinecone + OpenAI",
+        "modules": {
+            "ingestion": "Parent-Child RAG (NCERT PDFs to Pinecone)",
+            "evaluation": "3-Phase Multi-Agent Essay Grading",
+            "docs": "/docs"
+        }
     }
 
-@app.post("/upload/", status_code=202)
+# ============================================================================
+# MODULE 1: DATA INGESTION ENDPOINTS
+# ============================================================================
+
+@app.post("/ingest/textbook", response_model=IngestionResponse)
+async def ingest_ncert_textbook(request: IngestionRequest):
+    """
+    Ingest NCERT textbook using Parent-Child RAG strategy.
+    
+    - Extracts text from PDF
+    - Creates parent chunks (~1000 tokens) stored in MongoDB
+    - Creates child chunks (~200 tokens) embedded and stored in Pinecone
+    - Links children to parents via metadata
+    
+    Args:
+        request: IngestionRequest with subject, grade, file_path
+        
+    Returns:
+        IngestionResponse with status and statistics
+    """
+    try:
+        logger.info(f"Starting ingestion: {request.subject} Grade {request.grade}")
+        result = await ingestion_pipeline.ingest_textbook(
+            file_path=request.file_path,
+            subject=request.subject,
+            grade=request.grade
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Ingestion error: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.post("/ingest/batch")
+async def ingest_batch_textbooks(files: List[IngestionRequest]):
+    """
+    Ingest multiple NCERT textbooks in parallel.
+    
+    Args:
+        files: List of IngestionRequest objects
+        
+    Returns:
+        Aggregated results for all files
+    """
+    try:
+        file_tuples = [
+            (f.file_path, f.subject, f.grade) for f in files
+        ]
+        result = await ingestion_pipeline.ingest_batch(file_tuples)
+        return result
+    except Exception as e:
+        logger.error(f"Batch ingestion error: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+# ============================================================================
+# MODULE 2: ESSAY EVALUATION ENDPOINTS
+# ============================================================================
+
+@app.post("/grade_essay", response_model=GradeEssayResponse)
+async def grade_essay(request: GradeEssayRequest):
+    """
+    Grade a student's essay using multi-agent evaluation system.
+    
+    **3-Phase Flow:**
+    
+    **Phase 0:** Shadow Rubric
+    - Query RAG system with the question
+    - Extract 15 must-have concepts from NCERT content
+    
+    **Phase 1:** Extraction & Parsing
+    - Extract atomic claims from essay
+    - Extract discourse markers (logical flow indicators)
+    
+    **Phase 2:** Parallel Agent Execution
+    - Fact Checker Agent: Verify claims against NCERT (0-100)
+    - Content Coverage Agent: Check concept coverage (0-100)
+    - Linguistic Agent: Analyze grammar/vocabulary (0-100)
+    
+    **Phase 3:** Holistic Scoring
+    - Content Score = (Fact Accuracy + Coverage) / 2
+    - Logical Flow = Paragraph-to-paragraph vector similarity
+    - Raw Score = (0.5 * Content) + (0.3 * Flow) + (0.2 * Language)
+    - Final Score = Raw Score - (15 * contradiction_count)
+    - Normalized Score = (Final Score / 100) * 1600
+    
+    Args:
+        request: GradeEssayRequest with essay_text, question, subject
+        
+    Returns:
+        GradeEssayResponse with complete grading report
+    """
+    try:
+        logger.info(f"Starting essay evaluation")
+        result = await evaluation_engine.grade_essay(
+            essay_text=request.essay_text,
+            question=request.question,
+            subject=request.subject
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Essay grading error: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.get("/evaluation/{evaluation_id}")
+async def get_evaluation(evaluation_id: str):
+    """
+    Retrieve a previously saved evaluation by ID.
+    
+    Args:
+        evaluation_id: The evaluation ID from grading response
+        
+    Returns:
+        Complete evaluation report
+    """
+    try:
+        doc = await evaluation_engine.evaluations_collection.find_one(
+            {"evaluation_id": evaluation_id}
+        )
+        if not doc:
+            raise HTTPException(404, "Evaluation not found")
+        
+        # Remove MongoDB ID for cleaner response
+        doc.pop("_id", None)
+        return doc
+        
+    except Exception as e:
+        logger.error(f"Error retrieving evaluation: {str(e)}")
+        raise HTTPException(500, str(e))
+
+# ============================================================================
+# LEGACY ENDPOINTS (For backward compatibility)
+# ============================================================================
+
+
 async def upload_essay(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -257,15 +415,19 @@ async def health_check():
 
 @app.on_event("startup")
 async def startup():
-    logger.info("=" * 60)
-    logger.info("Essay Grader API v2.0 - Secure Ingestion Layer")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
+    logger.info("Essay Grader API v3.0 - UPSC AI Assistant")
+    logger.info("=" * 70)
     logger.info("✓ API Gateway started on port 8000")
+    logger.info("✓ Module 1: Data Ingestion (NCERT → Pinecone + MongoDB)")
+    logger.info("✓ Module 2: Multi-Agent Evaluation Engine (3-Phase Flow)")
     logger.info("✓ Rate limiting: 50 uploads/min")
     logger.info("✓ Kafka topics: ocr-jobs, ai-processing")
+    logger.info("✓ OpenAI & Pinecone integration active")
     logger.info("✓ Docs available at: /docs")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
 
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("Essay Grader API shutting down...")
+

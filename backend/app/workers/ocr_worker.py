@@ -132,7 +132,14 @@ async def consume():
                     "mongo_id": mongo_id,   # Pass the same ID forward
                     "filename": filename
                 }
-                
+                # Attach optional context if present in Mongo document or incoming message
+                question = document.get("question") or data.get("question")
+                subject = document.get("subject") or data.get("subject")
+                if question:
+                    ai_message["question"] = question
+                if subject:
+                    ai_message["subject"] = subject
+
                 success = await produce_to_ai_queue(ai_message)
                 if success:
                     logger.info(f"[ESSAY #{sub_id}] → Handoff to AI Worker successful\n")
