@@ -18,10 +18,10 @@ aiohttp
 tenacity
 python-docx
 datetime
-pinecone-client
 openai
 tiktoken
 pymupdf
 numpy
 scikit-learn
-fastembed
+sentence-transformers
+pinecone

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # ESSAY EVALUATION ENGINE
 # ============================================================================
-essay_evaluator = EssayEvaluationEngine()
+essay_evaluator = EssayEvaluationEngine(mongodb)
 
 async def consume():
     """

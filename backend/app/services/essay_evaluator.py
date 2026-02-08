@@ -8,11 +8,13 @@ Three phases:
 """
 
 import asyncio
+import os
 import numpy as np
 from typing import List, Dict, Any, Tuple
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pinecone import Pinecone
-from openai import AsyncOpenAI
+from pinecone import Pinecone as PineconeClient
+from langchain_groq import ChatGroq
+from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from app.core.config import settings
 import logging
@@ -33,11 +35,48 @@ class EssayEvaluationEngine:
             mongo_db: Motor AsyncIOMotorDatabase instance
         """
         self.mongo_db = mongo_db
-        self.openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        self.pinecone_client = Pinecone(api_key=settings.PINECONE_API_KEY)
+
+        # --- Validate critical environment settings early ---
+        if not settings.GROQ_API_KEY:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Set GROQ_API_KEY in the environment or .env before starting the app."
+            )
+
+        # Note: embeddings are generated locally via sentence-transformers
+
+        if not settings.PINECONE_API_KEY:
+            raise RuntimeError(
+                "PINECONE_API_KEY is not set. Set PINECONE_API_KEY in the environment or .env before starting the app."
+            )
+
+        # Groq LLM (for all chat completions) - use centralized settings
+        self.groq_client = ChatGroq(
+            temperature=0,
+            groq_api_key=settings.GROQ_API_KEY,
+            model_name="groq/compound"
+        )
+
+        # Local embedding model (sentence-transformers) used for embeddings.
+        # Free, no external API calls required.
+        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        # Pinecone client (new SDK v3+) - use centralized settings
+        self.pinecone_client = PineconeClient(api_key=settings.PINECONE_API_KEY)
         self.parent_docs_collection = mongo_db[settings.MONGO_PARENT_DOCS_COLLECTION]
         self.shadow_graphs_collection = mongo_db[settings.MONGO_SHADOW_GRAPHS_COLLECTION]
         self.evaluations_collection = mongo_db[settings.MONGO_ESSAY_EVALUATIONS_COLLECTION]
+
+    async def _embed_text(self, text: str) -> List[float]:
+        """
+        Get embedding for `text` using sentence-transformers in a threadpool to avoid blocking.
+        """
+        loop = asyncio.get_running_loop()
+        # encode runs the model synchronously; we run it in an executor to avoid blocking
+        emb = await loop.run_in_executor(None, self.embedding_model.encode, text)
+        # Result is a numpy array; convert to list
+        if hasattr(emb, "tolist"):
+            return emb.tolist()
+        return list(emb)
     
     # ========================================================================
     # PHASE 0: SHADOW RUBRIC (Dynamic Benchmarking)
@@ -61,12 +100,8 @@ class EssayEvaluationEngine:
             List of retrieved documents with parent content
         """
         try:
-            # Get embedding for query
-            response = await self.openai_client.embeddings.create(
-                model=settings.EMBEDDING_MODEL,
-                input=query_text
-            )
-            query_embedding = response.data[0].embedding
+            # Get embedding for query using local sentence-transformers
+            query_embedding = await self._embed_text(query_text)
             
             # Query Pinecone
             index_name = settings.PINECONE_INDICES.get(subject.lower(), f"{subject.lower()}-index")
@@ -103,7 +138,7 @@ class EssayEvaluationEngine:
     
     async def _extract_concepts(self, text: str) -> List[str]:
         """
-        Extract key concepts from text using LLM.
+        Extract key concepts from text using Groq LLM.
         
         Args:
             text: Text to extract concepts from
@@ -119,14 +154,8 @@ Text:
 
 Concepts:"""
         
-        response = await self.openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=200
-        )
-        
-        concepts_text = response.choices[0].message.content.strip()
+        response = await self.groq_client.ainvoke(prompt)
+        concepts_text = response.content.strip()
         concepts = [c.strip() for c in concepts_text.split(",")]
         return concepts[:15]  # Limit to 15
     
@@ -200,7 +229,7 @@ Concepts:"""
     
     async def extract_atomic_claims(self, essay_text: str) -> List[str]:
         """
-        Extract atomic claims from essay using LLM.
+        Extract atomic claims from essay using Groq LLM.
         
         Args:
             essay_text: Student's essay
@@ -217,14 +246,8 @@ Essay:
 
 Atomic Claims:"""
         
-        response = await self.openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=500
-        )
-        
-        claims_text = response.choices[0].message.content.strip()
+        response = await self.groq_client.ainvoke(prompt)
+        claims_text = response.content.strip()
         # Parse numbered list
         claims = re.findall(r'\d+\.\s*(.+?)(?=\n\d+\.|\Z)', claims_text, re.DOTALL)
         claims = [c.strip() for c in claims if c.strip()]
@@ -310,14 +333,8 @@ Retrieved Content:
 
 Answer with ONLY one word: SUPPORTED, CONTRADICTED, or NEUTRAL"""
                 
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": verification_prompt}],
-                    temperature=0,
-                    max_tokens=10
-                )
-                
-                status = response.choices[0].message.content.strip().upper()
+                response = await self.groq_client.ainvoke(verification_prompt)
+                status = response.content.strip().upper()
                 
                 if status == "CONTRADICTED":
                     contradiction_count += 1
@@ -404,7 +421,7 @@ Answer with ONLY one word: SUPPORTED, CONTRADICTED, or NEUTRAL"""
     
     async def linguistic_agent(self, essay_text: str) -> Dict[str, Any]:
         """
-        Agent 3: Analyze grammar, vocabulary, and UPSC-suitable tone.
+        Agent 3: Analyze grammar, vocabulary, and UPSC-suitable tone using Groq.
         
         Args:
             essay_text: Student's essay
@@ -428,16 +445,11 @@ Essay (first 500 words):
 JSON:"""
         
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": analysis_prompt}],
-                temperature=0,
-                max_tokens=200
-            )
+            response = await self.groq_client.ainvoke(analysis_prompt)
             
             # Parse response (try to extract JSON)
             import json
-            response_text = response.choices[0].message.content.strip()
+            response_text = response.content.strip()
             
             # Try to find JSON in response
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
@@ -498,16 +510,10 @@ JSON:"""
             return 50.0  # Default for single paragraph
         
         try:
-            # Get embeddings for all paragraphs
-            responses = await asyncio.gather(*[
-                self.openai_client.embeddings.create(
-                    model=settings.EMBEDDING_MODEL,
-                    input=p
-                )
-                for p in paragraphs
+            # Get embeddings for all paragraphs using local model
+            embeddings = await asyncio.gather(*[
+                self._embed_text(p) for p in paragraphs
             ])
-            
-            embeddings = [r.data[0].embedding for r in responses]
             
             # Calculate cosine similarity between consecutive paragraphs
             similarities = []

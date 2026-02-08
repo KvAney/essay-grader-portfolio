@@ -1,4 +1,8 @@
 import os
+from dotenv import load_dotenv
+
+# Load .env early so os.getenv() picks up variables when Settings is instantiated
+load_dotenv()
 
 class Settings:
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:ppt@localhost:5432/essay_eval_db")

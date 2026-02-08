@@ -13,9 +13,8 @@ from typing import List, Dict, Any, Tuple
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pinecone import Pinecone
-from openai import AsyncOpenAI
 from app.core.config import settings
-from fastembed import TextEmbedding
+from sentence_transformers import SentenceTransformer
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,11 +32,10 @@ class NCERTIngestionPipeline:
             mongo_db: Motor AsyncIOMotorDatabase instance
         """
         self.mongo_db = mongo_db
-        self.openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         self.pinecone_client = Pinecone(api_key=settings.PINECONE_API_KEY)
         self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
         self.parent_docs_collection = mongo_db[settings.MONGO_PARENT_DOCS_COLLECTION]
-        self.embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
     
     def _extract_text_from_pdf(self, file_path: str) -> str:
         """
@@ -135,22 +133,16 @@ class NCERTIngestionPipeline:
     
     async def _get_embedding(self, text: str) -> List[float]:
         """
-        Get embedding locally using FastEmbed (Free & Private).
+        Get embedding locally using sentence-transformers (Free & Private).
         """
         try:
-            # FastEmbed is synchronous (CPU bound). 
+            # sentence-transformers.encode is synchronous (CPU bound). 
             # We run it in a thread executor to avoid blocking the asyncio event loop.
             loop = asyncio.get_running_loop()
-
-            def generate():
-                # embed() expects a list of documents and returns a generator
-                # We consume the generator with list() and take the first result
-                embeddings = list(self.embedding_model.embed([text]))
-                return embeddings[0]
-
-            # Run in background thread
-            embedding_numpy = await loop.run_in_executor(None, generate)
-
+            # encode returns a numpy array; pass it directly to executor
+            embedding_numpy = await loop.run_in_executor(
+                None, self.embedding_model.encode, text
+            )
             # Convert numpy array to standard python List[float]
             return embedding_numpy.tolist()
 
