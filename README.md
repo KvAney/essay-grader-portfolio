@@ -158,13 +158,6 @@ graph TD
 - `POST /grade_essay` evaluates a candidate essay using shadow rubrics and parallel agents.
 - Grades normalize into a 0–1600 range with letter grades from A+ to F.
 
-## Recommended reading
-
-- `README_V3.md` for the full v3 implementation overview.
-- `QUICK_REFERENCE_V3.md` for endpoint examples and code snippets.
-- `IMPLEMENTATION_MODULES.md` for internals and module-by-module design.
-
-
 ### Kafka Connection Issues
 - Ensure `KAFKA_BOOTSTRAP_SERVERS` is set correctly
 - For Docker: use `kafka:9092` (internal)
@@ -180,7 +173,6 @@ graph TD
 
 ## Future Enhancements
 
-- [ ] Real Tesseract OCR integration
 - [ ] S3 file storage instead of inline hex
 - [ ] Email notifications
 - [ ] User authentication
