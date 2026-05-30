@@ -1,203 +1,169 @@
 # Essay Grader Portfolio Project
 
-A comprehensive essay grading system using Hybrid Architecture (PostgreSQL + MongoDB + Kafka) with AI-powered evaluation via Groq.
+A concise, architecture-first AI essay grading platform for UPSC aspirants that combines OCR ingestion, vector search, and a multi-agent evaluation pipeline.
 
-## Architecture Overview
+## Core Features
 
-```
-Frontend (React) → Backend API (FastAPI) → Kafka Message Queue
-                                            ├── OCR Worker → MongoDB
-                                            └── AI Worker (Groq) → MongoDB
-                        
-PostgreSQL (Metadata)
-```
+- **Grammar Analysis**: Detects spelling, punctuation, and sentence-level fluency to improve readability.
+- **Fact Checking**: Validates essay claims against ingested NCERT content and trusted textbook knowledge.
+- **Holistic Scoring**: Computes a balanced score from content accuracy, flow, and language quality.
+- **Concept Coverage**: Measures whether the essay includes the most important concepts for the topic.
+- **Textbook Ingestion**: Converts NCERT PDFs into searchable knowledge stores with parent-child chunking.
+- **Parallel Evaluation**: Runs fact, content, and linguistic agents concurrently for faster grading.
+- **Scalable Pipeline**: Uses Kafka for async processing, batching, and worker orchestration.
 
-## Features
+## What This Project Solves
 
-- **File Upload**: Upload essays in PDF or text format
-- **OCR Processing**: Extract text from documents using Tesseract
-- **AI Grading**: Evaluate essays using Groq's LLaMA model
-- **Real-time Status**: Track submission status in real-time
-- **Scalable Architecture**: Kafka-based message queue for async processing
+This system is built to grade essays beyond surface-level style checks. It evaluates work across four frontiers:
 
-## Tech Stack
+1. **Grammar** – correct language, sentence structure, and tone.
+2. **Fact-checking** – accuracy of claims against textbook evidence.
+3. **Holistic approach** – how ideas are organized, connected, and scored in aggregate.
+4. **Concepts-covered** – whether key topic concepts appear clearly and correctly.
 
-### Backend
-- **Framework**: FastAPI
-- **Databases**: PostgreSQL (relational), MongoDB (document store)
-- **Message Broker**: Apache Kafka
-- **AI API**: Groq (LLaMA 3 70B)
-- **OCR**: Tesseract
+## Architecture Summary
 
-### Frontend
-- **Framework**: React 18
-- **HTTP Client**: Axios
+- **Client** submits an essay or textbook ingestion request.
+- **FastAPI** routes requests and produces Kafka jobs.
+- **OCR Worker** extracts text and stores parent chunks in MongoDB.
+- **Vector pipeline** embeds child chunks for semantic search in Pinecone.
+- **Essay Evaluation Engine** queries the knowledge store, generates a shadow rubric, and runs parallel agents.
+- **Scoring Engine** aggregates content, flow, and language into a normalized final grade.
 
-### Infrastructure
-- **Containerization**: Docker & Docker Compose
-- **Services**: Zookeeper, Kafka, PostgreSQL, MongoDB
+## Data Flow Diagram
 
-## Project Structure
+```mermaid
+graph TD
+    %% Define Styles & Classes
+    classDef client fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    classDef api fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef pipeline fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
+    classDef agent fill:#ede7f6,stroke:#5e35b1,stroke-width:2px;
+    classDef storage fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
 
-```
-essay-grader-portfolio/
-├── docker-compose.yml           # Infrastructure setup
-├── backend/
-│   ├── Dockerfile              # Backend container
-│   ├── requirements.txt         # Python dependencies
-│   ├── .env                     # Environment variables
-│   └── app/
-│       ├── __init__.py
-│       ├── main.py              # FastAPI application
-│       ├── core/
-│       │   └── config.py         # Configuration
-│       ├── db/
-│       │   ├── postgres.py       # PostgreSQL connection
-│       │   ├── mongo.py          # MongoDB connection
-│       │   └── models.py         # Database models
-│       ├── services/
-│       │   ├── ocr.py            # OCR processing
-│       │   └── ai_agents.py      # Groq AI integration
-│       └── workers/
-│           ├── ocr_worker.py     # Kafka consumer 1
-│           └── ai_worker.py      # Kafka consumer 2
-└── frontend/
-    ├── package.json
-    ├── public/
-    │   └── index.html
-    └── src/
-        ├── App.jsx
-        ├── App.css
-        ├── index.js
-        └── index.css
-```
+    %% Client Layer
+    subgraph Client_Layer [Client Interface]
+        UPSC_Aspirant[UPSC Aspirant / Web UI]:::client
+    end
 
-## Setup Instructions
+    %% API Routing Layer
+    subgraph API_Layer [FastAPI Gateway]
+        FastAPI_App[app.main:app]:::api
+        Ingest_EP["POST /ingest/textbook"]:::api
+        Grade_EP["POST /grade_essay"]:::api
+        
+        FastAPI_App --> Ingest_EP
+        FastAPI_App --> Grade_EP
+    end
 
-### Prerequisites
+    %% Module 1: Ingestion
+    subgraph Ingestion_Pipeline [Module 1: Data Ingestion Pipeline]
+        Pipeline_Core[NCERTIngestionPipeline]:::pipeline
+        PyMuPDF[PyMuPDF Text Extraction]:::pipeline
+        Chunker[Parent/Child Splitter]:::pipeline
+        OpenAI_Embed[text-embedding-3-small]:::pipeline
 
-- Docker & Docker Compose installed
-- Node.js 14+ (for frontend development)
-- Groq API key from [console.groq.com](https://console.groq.com)
+        Ingest_EP --> Pipeline_Core
+        Pipeline_Core --> PyMuPDF
+        PyMuPDF --> Chunker
+        Chunker -->|Parent Chunks ~1000 tokens| Mongo_Doc
+        Chunker -->|Child Chunks ~200 tokens| OpenAI_Embed
+        OpenAI_Embed -->|1536-dim Vectors| Pinecone_DB
+    end
 
-### 1. Create .env file
+    %% Module 2: Evaluation Core
+    subgraph Evaluation_Engine [Module 2: Essay Evaluation Engine]
+        Eval_Core[EssayEvaluationEngine]:::eval
+        Shadow_Rubric[Phase 0: Shadow Rubric Generation]:::eval
+        Parser[Phase 1: Claim & Discourse Extraction]:::eval
+        Scoring_Hub[Phase 3: Holistic Scoring Engine]:::eval
 
-Create `backend/.env`:
+        Grade_EP --> Eval_Core
+        Eval_Core --> Shadow_Rubric
+        Shadow_Rubric -->|Query Vector Search| Pinecone_DB
+        Pinecone_DB -.->|Context Retrieval| Shadow_Rubric
+        Shadow_Rubric -->|Extract 15 Must-Have Concepts| Parser
+        Parser -->|Atomic Claims & Markers| Parallel_Agents
+    end
 
-```env
-GROQ_API_KEY=gsk_YOUR_API_KEY_HERE
-DATABASE_URL=postgresql://postgres:ppt@postgres_db:5432/essay_eval_db
-MONGO_URL=mongodb://mongo_db:27017
-KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-```
+    %% Multi-Agent Parallel Execution
+    subgraph Parallel_Agents [Phase 2: Parallel Agent Execution]
+        Agent_Fact[Fact Checker Agent]:::agent
+        Agent_Content[Content Coverage Agent]:::agent
+        Agent_Ling[Linguistic Agent]:::agent
+        
+        Agent_Fact -.->|Verify Claims| Mongo_Doc
+        Agent_Content -.->|Compare vs Shadow Rubric| Shadow_Rubric
+    end
 
-### 2. Start Services
+    %% Aggregation & Storage Links
+    Parallel_Agents --> Scoring_Hub
+    
+    subgraph Scoring_Formula [Holistic Aggregator]
+        Scoring_Hub -->|Content 50%| Calc1["(Fact Accuracy + Coverage) / 2"]
+        Scoring_Hub -->|Flow 30%| Calc2["Paragraph Vector Similarity"]
+        Scoring_Hub -->|Language 20%| Calc3["Grammar & Tone Evaluation"]
+    end
 
-```bash
-cd essay-grader-portfolio
-docker-compose up --build
-```
+    Calc1 & Calc2 & Calc3 --> Final_Score["Final Score Calculation<br/>(Raw Score - Contradiction Penalties)"]
+    Final_Score --> Normalize["Normalize to 0-1600 Range<br/>(Assign Grade A+ through F)"]
+    Normalize --> Mongo_Doc
 
-This will start:
-- PostgreSQL on port 5432
-- MongoDB on port 27017
-- Kafka on port 9092
-- FastAPI backend on port 8000
+    %% Shared Infrastructure Layer
+    subgraph Storage_Layer [Infrastructure & Database Layer]
+        Mongo_Doc[(MongoDB Atlas<br/>Parent Chunks & Evaluations)]:::storage
+        Pinecone_DB[(Pinecone Vector DB<br/>Subject-Vertical Indices)]:::storage
+    end
 
-### 3. Test the API
-
-Open browser and go to: `http://localhost:8000/docs`
-
-**Test Endpoints:**
-
-1. **Upload Essay**
-   - POST `/upload/`
-   - Upload a text file or PDF
-   - Response: `{"submission_id": 1, "status": "Queued for OCR"}`
-
-2. **Check Status**
-   - GET `/status/{submission_id}`
-   - Response: `{"status": "completed", "result": "...AI evaluation..."}`
-
-3. **List All Submissions**
-   - GET `/submissions/`
-
-### 4. Frontend (Optional)
-
-```bash
-cd frontend
-npm install
-npm start
+    %% User Interaction Direction
+    UPSC_Aspirant --> FastAPI_App
 ```
 
-Visit `http://localhost:3000`
+## Technical Design Highlights
 
-## API Endpoints
+### Textbook storage scaling
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/` | Health check |
-| POST | `/upload/` | Upload essay file |
-| GET | `/status/{submission_id}` | Get submission status |
-| GET | `/submissions/` | List all submissions |
+- **Parent/child chunking** stores textbooks as a hierarchical knowledge graph.
+- **Parent chunks** hold broader context (~1000 tokens) for semantic alignment.
+- **Child chunks** are narrow, dense pieces (~200 tokens) optimized for embedding.
+- This model prevents oversized text blocks and keeps retrieval efficient even for large NCERT books.
+- **MongoDB** stores raw parent chunks and evaluation metadata, while **Pinecone** stores vector embeddings for fast semantic lookups.
 
-## Kafka Topics
+### Parallel users and throughput
 
-| Topic | Producer | Consumer | Purpose |
-|-------|----------|----------|---------|
-| `ocr-jobs` | API Gateway | OCR Worker | Initial processing queue |
-| `ai-processing` | OCR Worker | AI Worker | AI evaluation queue |
+- **Kafka streaming** decouples the API gateway from OCR and AI workers.
+- Requests are queued into topics so the backend never blocks while waiting for expensive processing.
+- **Workers** consume and process jobs concurrently, enabling many users to submit essays at once.
+- **Batching** and rate limiting mitigate API and model throttling while maximizing throughput.
+- A streaming design also supports replay, backpressure, and fault-tolerant retries.
 
-## Database Schema
+### Solution-architecture
 
-### PostgreSQL (submissions table)
+- **Async pipeline** was chosen so grading can scale independently from request ingress.
+- **Separate storage tiers** preserve transactional metadata in PostgreSQL, raw content in MongoDB, and semantic state in Pinecone.
+- **Multi-agent evaluation** isolates fact validation, content coverage, and linguistic quality for explainable scoring.
+- **Holistic scoring** combines multiple signals instead of relying on a single model output, reducing bias and improving consistency.
+- **Contrast penalties** ensure contradictory or unsupported claims lower the final score.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | INTEGER (PK) | Submission ID |
-| filename | STRING | Original filename |
-| status | STRING | Current status |
-| mongo_id | STRING | Link to MongoDB document |
-| created_at | DATETIME | Timestamp |
+## Why these four grading frontiers matter
 
-### MongoDB (evaluations collection)
+- **Grammar** ensures that the essay is readable and professionally presented.
+- **Fact-checking** verifies that the essay is not just plausible but also grounded in textbook evidence.
+- **Holistic approach** evaluates structure, argument coherence, and idea progression.
+- **Concepts-covered** ensures students address the right syllabus nodes and key topic facts.
 
-```json
-{
-  "_id": "ObjectId",
-  "submission_id": 1,
-  "text": "Extracted essay text...",
-  "ai_result": "Grade and feedback...",
-  "status": "completed",
-  "created_at": "timestamp"
-}
-```
+## Quick usage notes
 
-## Status Flow
+- `POST /ingest/textbook` loads NCERT content and prepares the knowledge store.
+- `POST /grade_essay` evaluates a candidate essay using shadow rubrics and parallel agents.
+- Grades normalize into a 0–1600 range with letter grades from A+ to F.
 
-1. **queued** → File uploaded, waiting for OCR
-2. **ocr_completed** → Text extracted, waiting for AI analysis
-3. **completed** → AI evaluation done, result available
+## Recommended reading
 
-## Environment Variables
+- `README_V3.md` for the full v3 implementation overview.
+- `QUICK_REFERENCE_V3.md` for endpoint examples and code snippets.
+- `IMPLEMENTATION_MODULES.md` for internals and module-by-module design.
 
-- `GROQ_API_KEY`: Your Groq API key
-- `DATABASE_URL`: PostgreSQL connection string
-- `MONGO_URL`: MongoDB connection string
-- `KAFKA_BOOTSTRAP_SERVERS`: Kafka broker address
-- `OCR_TOPIC`: Kafka topic for OCR jobs
-- `AI_TOPIC`: Kafka topic for AI processing
-
-## Rate Limiting
-
-Groq Free Tier: 20 requests per minute
-
-To enable rate limiting in `ai_worker.py`, uncomment:
-```python
-time.sleep(3)  # Throttle to ~20 RPM
-```
-
-## Troubleshooting
 
 ### Kafka Connection Issues
 - Ensure `KAFKA_BOOTSTRAP_SERVERS` is set correctly
