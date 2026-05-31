@@ -186,7 +186,7 @@ flowchart TD
         B[app.main:app]
         B --> C[POST /ingest/textbook]
         B --> D[POST /grade_essay]
-        B --> E[GET /status/{submission_id}]
+        B --> E["GET /status/{submission_id}"]
     end
 
     subgraph Stream [Kafka Streaming]
@@ -198,7 +198,7 @@ flowchart TD
         H[NCERTIngestionPipeline]
         H --> I[PyMuPDF Text Extraction]
         I --> J[Parent/Child Chunker]
-        J --> K[MongoDB (Parent Chunks)]
+        J --> K["MongoDB (Parent Chunks)"]
         J --> L[Embeddings Service]
         L --> M[Pinecone / Vector DB]
     end
@@ -218,9 +218,9 @@ flowchart TD
     end
 
     subgraph Storage [Persistence Layer]
-        V[PostgreSQL (Metadata)]
-        W[MongoDB (Extracted Text & Evaluations)]
-        X[Vector DB (Semantic Search)]
+        V["PostgreSQL (Metadata)"]
+        W["MongoDB (Extracted Text & Evaluations)"]
+        X["Vector DB (Semantic Search)"]
     end
 
     A --> B
@@ -234,7 +234,6 @@ flowchart TD
     L --> X
     O --> X
 ```
-
 ### 7.2 Textbook ingestion feature flow
 
 ```mermaid
